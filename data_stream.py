@@ -3,6 +3,7 @@ import json
 from pyspark.sql import SparkSession
 from pyspark.sql.types import *
 import pyspark.sql.functions as psf
+# from pyspark.sql.functions import col, window
 
 
 # TODO Create a schema for incoming resources
@@ -33,7 +34,10 @@ def run_spark_job(spark):
         .option("kafka.bootstrap.servers", "localhost:9092") \
         .option("subscribe", "com.udacity.apache.spark.police.calls.raw.v1")\
         .option("startingOffsets", "earliest")\
-        .option("maxOffsetsPerTrigger", 1000)\
+        .option("maxOffsetsPerTrigger", 5000)\
+        .option("maxRatePerPartition", 1000)\
+        .option("spark.sql.inMemoryColumnarStorage.batchSize", 100000)\
+        .option("spark.sql.shuffle.partitions", 1000)\
         .option("stopGracefullyOnShutdown", "true")\
         .load()
 
@@ -53,16 +57,17 @@ def run_spark_job(spark):
 
     # TODO select original_crime_type_name and disposition
     distinct_table = service_table\
-        .select('original_crime_type_name','disposition')\
+        .select('original_crime_type_name','disposition', "call_date_time")\
         .distinct()
         
 
     # count the number of original crime type
     agg_df = distinct_table\
-        .select("original_crime_type_name")\
-        .groupby("original_crime_type_name")\
+        .select("original_crime_type_name", "call_date_time")\
+        .withWatermark("call_date_time", '60 minutes')\
+        .groupBy("original_crime_type_name")\
         .count()\
-        .orderBy("count", ascending=False)
+#         .orderBy("count", ascending=False)
     
 
     # TODO Q1. Submit a screen shot of a batch ingestion of the aggregation
@@ -71,7 +76,7 @@ def run_spark_job(spark):
         .writeStream\
         .queryName("qraw")\
         .format("console")\
-        .outputMode("Complete")\
+        .outputMode("Update")\
         .trigger(processingTime="30 seconds")\
         .start()
 
@@ -90,7 +95,6 @@ def run_spark_job(spark):
 
     # TODO join on disposition column
     join_query = agg_df.join(radio_code_df, agg_df.disposition == radio_code_df.disposition, how="left")
-
 
     join_query.awaitTermination()
 
